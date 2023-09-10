@@ -225,8 +225,8 @@ def obterMelhoresAtivosCompra():
     # obter a relacao de todos os ativos para selecionar os melhores com base nos critérios desejados
     cliente = MongoClient("mongodb://localhost:27017")
     banco_de_dados = cliente["fiis"]
-    colecao = banco_de_dados["fiis"]
-    data_maxima = colecao.find_one(sort=[("TIMESTAMP", pymongo.DESCENDING)])
+    colecao_fiis = banco_de_dados["fiis"]
+    data_maxima = colecao_fiis.find_one(sort=[("TIMESTAMP", pymongo.DESCENDING)])
     #  Desconsiderar a hora na data máxima
     data_maxima = data_maxima["TIMESTAMP"].replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -317,6 +317,24 @@ def obterMelhoresAtivosCompra():
                             }
                         }
                     },
+                    {
+                        "$addFields": { # troca a virgula por ponto na liquidez diaria 
+                            "pvp_ponto" : {
+                                "$replaceAll": {
+                                    "input": "$PVP",        
+                                    "find": ",",   
+                                    "replacement": "." 
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "$addFields": { # converte a patrimonio_liquido para double pra filtrar 
+                            "pvp_float" : {
+                                "$toDouble": "$pvp_ponto"
+                            }
+                        }
+                    },
                     {   # Dados mais recentes
                         "$match": {
                             "TIMESTAMP": {"$gte": data_maxima}
@@ -381,19 +399,39 @@ def obterMelhoresAtivosCompra():
                     }
                 ]
 
-    documentos = colecao.aggregate(pipeline)
+    fiis_fitro_inicial = colecao_fiis.aggregate(pipeline)
+    json_list_fiis_filtro_inicial = json.loads(json.dumps(list(fiis_fitro_inicial), cls=JSONEncoder))
 
-    # print('filtros: ', filtros)
-    # documentos = colecao.find(filtros)
-    # i = 1
-    # for documento in documentos:
-    #     print("=============================================================================")
-    #     print(str(i), ' ',  documento)
-    #     print("=============================================================================")
-    #     i+=1
+    # depois de selecionar os fiis que se encaixam nos criterios iniciais de compra 
+    # vamos validar os ativos que ja tenho em carteira
+    colecao_carteira = banco_de_dados["wallet"]
+    carteira = colecao_carteira.find_one({})
+    # print('XXXXXXXXXXXXXXXXXXXXXXX fundos ', carteira["FUNDOS"])
 
-    json_list = json.loads(json.dumps(list(documentos), cls=JSONEncoder))
-    return json_list
+    # verificar em cada ativo da carteira do que tem menor posicao para o que tem maior posicao
+    # quais estao na lista dos filtros iniciais para indicar compra 
+    i = 1
+    fiis_bom_pra_compra = []
+    for fii_carteira in carteira["FUNDOS"]:
+        print("=============================================================================")
+        print(str(i), ' ',  fii_carteira["FUNDO"])
+        print("=============================================================================")
+        i+=1
+
+        # verificar se o ativo ta presente na lista filtrada 
+        for fiis_filtro in json_list_fiis_filtro_inicial:
+            # print(f'*************** {fii_carteira["FUNDO"]} == {fiis_filtro["FUNDOS"]}')
+            if fii_carteira["FUNDO"] == fiis_filtro["FUNDOS"] and fiis_filtro["pvp_float"] <= 1:
+                print('!!!!!! BOM PRA COMPRA')
+                fiis_bom_pra_compra.append(fiis_filtro)
+                
+    json_list_fiis_bom_pra_compra = json.loads(json.dumps(list(fiis_bom_pra_compra), cls=JSONEncoder))
+
+    json_final = {}
+    json_final["ativos_filtro"] = json_list_fiis_filtro_inicial
+    json_final["ativos_carteira"] = json_list_fiis_bom_pra_compra
+
+    return json_final
 
 
 
