@@ -17,6 +17,8 @@ import xml.etree.ElementTree as ET
 from unidecode import unidecode
 from datetime import datetime
 
+import time
+
 app = Flask(__name__)
 app.config["DEBUG"] = True
 
@@ -230,7 +232,7 @@ def obterMelhoresAtivosCompra():
     #  Desconsiderar a hora na data máxima
     data_maxima = data_maxima["TIMESTAMP"].replace(hour=0, minute=0, second=0, microsecond=0)
 
-    # filtrar fundos com quantidade de ativos maior ou igual a 5
+    # filtros para escolha dos melhores fiis
     pipeline = [
                     {
                         "$addFields": {
@@ -375,6 +377,7 @@ def obterMelhoresAtivosCompra():
                             "DY_3M_MEDIA": 0,
                             "DY_6M_ACUMULADO": 0,
                             "DY_6M_MEDIA": 0,
+                            "DIVIDEND_YIELD": 0,
                             "PVPA": 0,
                             "DY_ANO": 0,
                             "DY_PATRIMONIAL": 0,
@@ -401,6 +404,86 @@ def obterMelhoresAtivosCompra():
 
     fiis_fitro_inicial = colecao_fiis.aggregate(pipeline)
     json_list_fiis_filtro_inicial = json.loads(json.dumps(list(fiis_fitro_inicial), cls=JSONEncoder))
+    
+    # criar uma lista com os nomes dos ativos do filtro inicial
+    list_nomes_ativos_filtro_inicial = []
+    for ativo in json_list_fiis_filtro_inicial:
+        list_nomes_ativos_filtro_inicial.append(ativo["FUNDOS"])
+
+    # consultar historico de pagamento de dividendo dos ativos selecionados e tempo de funcionamento 
+    colecao_hist_dividendo = banco_de_dados["historico_dividendo_2"]
+    lista_hist_div_filtro_inicial = colecao_hist_dividendo.find({"NOME": {"$in" : list_nomes_ativos_filtro_inicial}})
+
+    print(f'{len(list_nomes_ativos_filtro_inicial)} ativos passaram no filtro inicial ... ')
+
+    # verificar os ativos que possuem mais de 5 anos de distribuicao regular de dividendo 
+    lista_ativos_pagando_div_reg_maisq_Xanos = []
+    QTD_ANOS_OPERACAO_FUNDO = 5
+    contagem_regulares = 0
+    contagem_maisq_5anos = 0
+    tolerancia_pagamentos_nao_realizados = 15
+    falhas_pagamento = 0
+    for ativo_hist_div in lista_hist_div_filtro_inicial:
+        hist_div = ativo_hist_div["HIST_DIVIDENDOS"]
+        # print("=================================================================")
+        # print(f"hist_div {ativo_hist_div['NOME']}: ", hist_div)
+        # print("=================================================================")
+        count_hist_div = len(hist_div)
+
+        # verificar se tem 5 anos ou mais de pagamentos 
+        qtd_anos_ativa = count_hist_div / 12
+        # print("=================================================================")
+        # print(f"qtd_anos_ativa {ativo_hist_div['NOME']}: ", qtd_anos_ativa)
+        # print("=================================================================")
+        if  qtd_anos_ativa >= QTD_ANOS_OPERACAO_FUNDO:
+            contagem_maisq_5anos+=1
+            # verificar se os pagamento foram feitos regularmente (todos os meses) durante o periodo de vigencia 
+            fl_cronologia_consistente = True
+            for index, value in enumerate(hist_div):
+                data_pagamento = value["data_pagamento"]
+                date_format = "%d/%m/%Y"
+                data_pagamento_obj = datetime.strptime(data_pagamento, date_format)
+                valor = value["valor"]
+                data_pagamento_seguinte = -1
+                valor_seguinte = -1
+
+                if index + 1 < len(hist_div):   # evita indexoutofbounds
+                    data_pagamento_seguinte = hist_div[index + 1]["data_pagamento"]
+                    data_pagamento_seguinte_obj = datetime.strptime(data_pagamento_seguinte, date_format)
+                    valor_seguinte = hist_div[index]["valor"]
+
+                    print(f"{contagem_regulares} - {contagem_maisq_5anos} ATIVO {ativo_hist_div['NOME']} -- data_pagamento: {data_pagamento} - valor: {valor} - data_pagamento_seguinte: {data_pagamento_seguinte} - valor_seguinte: {valor_seguinte}")
+
+                    # verificar se o mes seguinte da lista eh o mes seguinte cronologico
+                    mes_seguinte = data_pagamento_obj.month
+                    mes_atual = data_pagamento_seguinte_obj.month
+                    print(f"mes_atual: {mes_atual} - mes_seguinte: {mes_seguinte}")
+
+                    fl_cronologia_consistente = True if mes_atual == mes_seguinte - 1 else False
+
+                if fl_cronologia_consistente == False :
+                    falhas_pagamento+=1
+                    print("=================================================================")
+                    print(f"{contagem_regulares} - {contagem_maisq_5anos} ATIVO {ativo_hist_div['NOME']} deixou de pagar dividendo em ", data_pagamento_seguinte, f" falha #: {falhas_pagamento}")
+                    print("=================================================================")
+
+                    if falhas_pagamento >= tolerancia_pagamentos_nao_realizados:
+                        print("=================================================================")
+                        print(f"{contagem_regulares} - {contagem_maisq_5anos} ATIVO {ativo_hist_div['NOME']} deixou de pagar mais de {tolerancia_pagamentos_nao_realizados}x")
+                        print("=================================================================")
+                        falhas_pagamento = 0
+                        break
+            
+            print(f"{contagem_regulares} - {contagem_maisq_5anos} ATIVO: {ativo_hist_div['NOME']} pagou certinho: {fl_cronologia_consistente}")
+            if fl_cronologia_consistente == True:    
+                lista_ativos_pagando_div_reg_maisq_Xanos.append(ativo_hist_div['NOME'])
+
+        contagem_regulares+=1
+
+    print("=================================================================")
+    print("Qtd Ativos com mais de 5 anos: ", contagem_maisq_5anos)
+    print(f"{len(lista_ativos_pagando_div_reg_maisq_Xanos)} Ativos com mais de 5 anos e regularidade no pagamento: ", lista_ativos_pagando_div_reg_maisq_Xanos)
+    print("=================================================================")
 
     # depois de selecionar os fiis que se encaixam nos criterios iniciais de compra 
     # vamos validar os ativos que ja tenho em carteira
@@ -411,28 +494,131 @@ def obterMelhoresAtivosCompra():
     # verificar em cada ativo da carteira do que tem menor posicao para o que tem maior posicao
     # quais estao na lista dos filtros iniciais para indicar compra 
     i = 1
-    fiis_bom_pra_compra = []
+    fiis_bom_pra_compra_carteira = []
     for fii_carteira in carteira["FUNDOS"]:
-        print("=============================================================================")
-        print(str(i), ' ',  fii_carteira["FUNDO"])
-        print("=============================================================================")
+        # print("=============================================================================")
+        # print(str(i), ' ',  fii_carteira["FUNDO"])
+        # print("=============================================================================")
         i+=1
 
         # verificar se o ativo ta presente na lista filtrada 
-        for fiis_filtro in json_list_fiis_filtro_inicial:
+        for fiis_filtro in lista_ativos_pagando_div_reg_maisq_Xanos:
             # print(f'*************** {fii_carteira["FUNDO"]} == {fiis_filtro["FUNDOS"]}')
-            if fii_carteira["FUNDO"] == fiis_filtro["FUNDOS"] and fiis_filtro["pvp_float"] <= 1:
-                print('!!!!!! BOM PRA COMPRA')
-                fiis_bom_pra_compra.append(fiis_filtro)
+            ativoObj = obterAtivoLista(json_list_fiis_filtro_inicial, fiis_filtro)
+            if fii_carteira["FUNDO"] == fiis_filtro and float(ativoObj["pvp_ponto"]) <= 1:
+                # print('!!!!!! BOM PRA COMPRA')
+                fiis_bom_pra_compra_carteira.append(ativoObj)
                 
-    json_list_fiis_bom_pra_compra = json.loads(json.dumps(list(fiis_bom_pra_compra), cls=JSONEncoder))
+    json_list_fiis_bom_pra_compra_carteira = json.loads(json.dumps(list(fiis_bom_pra_compra_carteira), cls=JSONEncoder))
+
+    # obter todos os bons ativos encontrados, nao so os que "casam" com a carteira 
+    todos_bons_ativos = []
+    for ativoBom in lista_ativos_pagando_div_reg_maisq_Xanos:
+        ativo = obterAtivoLista(json_list_fiis_filtro_inicial, ativoBom)
+        # verificar o pvp
+        if float(ativo["pvp_ponto"]) <= 1:
+            todos_bons_ativos.append(ativo)
 
     json_final = {}
-    json_final["ativos_filtro"] = json_list_fiis_filtro_inicial
-    json_final["ativos_carteira"] = json_list_fiis_bom_pra_compra
+    json_final["ativos_carteira"] = json_list_fiis_bom_pra_compra_carteira
+    json_final["ativos_bons"] = todos_bons_ativos
 
     return json_final
 
+
+def obterAtivoLista(listaAtivosObj, nomeAtivo):
+    for ativoObj in listaAtivosObj:
+        if ativoObj["FUNDOS"] == nomeAtivo:
+            # print("@@@@@@@@@@@@@@@@@@@@@@@@@@ objativo: ", ativoObj)
+            return ativoObj
+    return None
+
+
+@app.route('/obter_historicos_dividendos', methods=['GET'])
+def obterHistoricoDividendos():
+    print('Endpoint de carga dos dados de dividendos dos fundos ...')
+
+    # obter os fundos da carteira 
+    # cliente = MongoClient("mongodb://192.168.0.190:27017")
+    # banco_de_dados = cliente["fiis"]
+    # colecao_carteira = banco_de_dados["wallet"]
+    # carteira = colecao_carteira.find_one({})
+
+    # obter a relacao de todos os ativos para selecionar os melhores com base nos critérios desejados
+    cliente = MongoClient("mongodb://192.168.0.190:27017")
+    banco_de_dados = cliente["fiis"]
+    colecao_fiis = banco_de_dados["fiis"]
+    data_maxima = colecao_fiis.find_one(sort=[("TIMESTAMP", pymongo.DESCENDING)])
+    #  Desconsiderar a hora na data máxima
+    data_maxima = data_maxima["TIMESTAMP"].replace(hour=0, minute=0, second=0, microsecond=0)
+
+    todos_fiis_res = colecao_fiis.find({"TIMESTAMP" : {"$gte" : data_maxima}})
+    # todos_fiis = json.loads(json.dumps(list(fiis_fitro_inicial), cls=JSONEncoder))
+
+    # lista_ativos = carteira["FUNDOS"]
+    lista_ativos = todos_fiis_res
+
+    i = 1
+    historico_dividendos = []
+    for fii_carteira in lista_ativos:
+        ativo = fii_carteira["FUNDOS"]
+        print("=============================================================================")
+        print(str(i), ' ',  ativo)
+        print("=============================================================================")
+        i+=1
+        
+        ativo_historico = {}
+        lista_historico = []
+        ativo_historico["NOME"] = ativo
+        ativo_historico["HIST_DIVIDENDOS"] = lista_historico
+
+        driver_path = 'C:\\Users\\Isaac\Documents\\python_workspace\\api_fiis\\chromedriver.exe'
+        options = ChromeOptions()
+        # options.add_argument("--headless")
+        driver = Chrome(executable_path=driver_path, options=options)
+        try :
+            driver.set_window_size(1280, 900)
+            driver.get(f'https://www.fundamentus.com.br/fii_proventos.php?papel={ativo}&tipo=2')
+
+            # obter a tabela dos dados 
+            table = driver.find_element_by_id('resultado')
+            linhas_tabela = table.find_elements_by_xpath('//tbody/tr')
+            # print('XXXXXXXXXXX linhas_tabela: ', len(linhas_tabela))
+
+            for linha in linhas_tabela:
+                colunas = linha.find_elements_by_xpath("td")
+                # print('XXXXXXXXXXX colunas: ', len(colunas))
+
+                data_com = colunas[0].text
+                data_pagamento = colunas[2].text
+                valor = colunas[3].text
+
+                lista_historico.append({
+                    "data_com": data_com,
+                    "data_pagamento":data_pagamento,
+                    "valor": valor
+                })
+
+                # print(f'XXXXXXXXXXXXXXX data_com: {data_com} - data_pagamento: {data_pagamento} - valor: {valor}')
+
+            # adicionar na lista final
+            historico_dividendos.append(ativo_historico)
+
+        except Exception as e:
+            print("================================================================")
+            print('ERROR aconteceu um erro: ', str(e))
+            print("================================================================")
+        finally:
+            driver.quit()
+    
+    # inserir a lista de historicos encontrados 
+    collection_hist_dividendo = banco_de_dados.historico_dividendo_2
+    for ativo_hist in historico_dividendos: 
+        print('XXXXXXXXXXXX ativo_hist: ', ativo_hist)
+        collection_hist_dividendo.insert_one(json.loads(json.dumps(ativo_hist, cls=JSONEncoder)))
+
+    # time.sleep(10000)
+    return historico_dividendos # json.loads(json.dumps(list(fiis_bom_pra_compra_carteira), cls=JSONEncoder))
 
 
 
