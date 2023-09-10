@@ -48,14 +48,14 @@ def conectar_banco():
     return mysql.connector.connect(
         user='root',
         password='123456',
-        host='localhost',
+        host='192.168.0.190',
         database='fii'
     )
 
 def insertMongoDB(json_list):
     print('====== GUARDAR DADOS NO BANCO DE DADOS MONGO ==========================')
     # print(json_list)
-    client = MongoClient("mongodb://localhost:27017")
+    client = MongoClient("mongodb://192.168.0.190:27017")
     db = client.fiis
     collection = db.fiis
 
@@ -192,7 +192,7 @@ class JSONEncoder(json.JSONEncoder):
 def obterDadosTickerXML():
     ticker = request.args.get('ticker')
     # print(ticker)
-    client = MongoClient("mongodb://localhost:27017")
+    client = MongoClient("mongodb://192.168.0.190:27017")
     db = client.fii
     collection = db.fii
     filtro = {"FUNDOS" : ticker.upper()}
@@ -223,7 +223,7 @@ def sanitizarKey(key):
 @app.route('/melhores_fiis', methods=['GET'])
 def obterMelhoresAtivosCompra():
     # obter a relacao de todos os ativos para selecionar os melhores com base nos critérios desejados
-    cliente = MongoClient("mongodb://localhost:27017")
+    cliente = MongoClient("mongodb://192.168.0.190:27017")
     banco_de_dados = cliente["fiis"]
     colecao_fiis = banco_de_dados["fiis"]
     data_maxima = colecao_fiis.find_one(sort=[("TIMESTAMP", pymongo.DESCENDING)])
